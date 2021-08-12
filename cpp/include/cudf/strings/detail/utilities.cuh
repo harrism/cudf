@@ -213,21 +213,24 @@ class per_context_cache {
   // If there is no object available in the cache, it calls the initializer
   // `init` to create a new one and cache it for later uses.
   template <typename Initializer>
-  TableType* find_or_initialize(const Initializer& init)
+  TableType* find_or_initialize(Initializer const& init)
   {
     CUcontext c;
     cuCtxGetCurrent(&c);
     auto finder = cache_.find(c);
     if (finder == cache_.end()) {
-      TableType* result = init();
-      cache_[c]         = result;
-      return result;
-    } else
-      return finder->second;
+      std::unique_ptr<TableType> result(init());
+      cache_[c] = std::move(result);
+      return cache_[c].get();
+    } else {
+      return finder->second.get();
+    }
   }
 
  private:
-  std::unordered_map<CUcontext, TableType*> cache_;
+  // The cache stores unique pointers so that its contents are destroyed automatically when the
+  // cache is destroyed. This enables function local static caches without memory leaks
+  std::unordered_map<CUcontext, std::unique_ptr<TableType>> cache_;
 };
 
 // This template is a thread-safe version of per_context_cache.
@@ -235,7 +238,7 @@ template <typename TableType>
 class thread_safe_per_context_cache : public per_context_cache<TableType> {
  public:
   template <typename Initializer>
-  TableType* find_or_initialize(const Initializer& init)
+  TableType* find_or_initialize(Initializer const& init)
   {
     std::lock_guard<std::mutex> guard(mutex);
     return per_context_cache<TableType>::find_or_initialize(init);

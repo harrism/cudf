@@ -27,36 +27,38 @@
 
 #include <rmm/cuda_stream_view.hpp>
 #include <rmm/device_uvector.hpp>
+#include <rmm/mr/device/device_memory_resource.hpp>
 
 #include <stdint.h>
 #include <algorithm>
 #include <fstream>
 #include <iostream>
 #include <vector>
+#include "rmm/mr/device/cuda_memory_resource.hpp"
 
 namespace nvtext {
 namespace detail {
 
 namespace {
 struct get_codepoint_metadata_init {
-  rmm::cuda_stream_view stream;
+  rmm::cuda_stream_view stream{};
+  rmm::mr::cuda_memory_resource& mr;
 
-  rmm::device_uvector<codepoint_metadata_type>* operator()() const
+  std::unique_ptr<rmm::device_uvector<codepoint_metadata_type>> operator()() const
   {
-    auto table_vector =
-      new rmm::device_uvector<codepoint_metadata_type>(codepoint_metadata_size, stream);
-    auto table = table_vector->data();
+    auto table_vector = std::make_unique<rmm::device_uvector<codepoint_metadata_type>>(
+      codepoint_metadata_size, stream, &mr);
     thrust::fill(rmm::exec_policy(stream),
-                 table + cp_section1_end,
-                 table + codepoint_metadata_size,
+                 table_vector->data() + cp_section1_end,
+                 table_vector->end(),
                  codepoint_metadata_default_value);
-    CUDA_TRY(cudaMemcpyAsync(table,
+    CUDA_TRY(cudaMemcpyAsync(table_vector->data(),
                              codepoint_metadata,
                              cp_section1_end * sizeof(codepoint_metadata[0]),  // 1st section
                              cudaMemcpyHostToDevice,
                              stream.value()));
     CUDA_TRY(cudaMemcpyAsync(
-      table + cp_section2_begin,
+      table_vector->data() + cp_section2_begin,
       cp_metadata_917505_917999,
       (cp_section2_end - cp_section2_begin + 1) * sizeof(codepoint_metadata[0]),  // 2nd section
       cudaMemcpyHostToDevice,
@@ -67,35 +69,36 @@ struct get_codepoint_metadata_init {
 
 struct get_aux_codepoint_data_init {
   rmm::cuda_stream_view stream;
+  rmm::mr::cuda_memory_resource& mr;
 
-  rmm::device_uvector<aux_codepoint_data_type>* operator()() const
+  std::unique_ptr<rmm::device_uvector<aux_codepoint_data_type>> operator()() const
   {
-    auto table_vector =
-      new rmm::device_uvector<aux_codepoint_data_type>(aux_codepoint_data_size, stream);
-    auto table = table_vector->data();
+    auto table_vector = std::make_unique<rmm::device_uvector<aux_codepoint_data_type>>(
+      aux_codepoint_data_size, stream, &mr);
+
     thrust::fill(rmm::exec_policy(stream),
-                 table + aux_section1_end,
-                 table + aux_codepoint_data_size,
+                 table_vector->data() + aux_section1_end,
+                 table_vector->end(),
                  aux_codepoint_default_value);
-    CUDA_TRY(cudaMemcpyAsync(table,
+    CUDA_TRY(cudaMemcpyAsync(table_vector->data(),
                              aux_codepoint_data,
                              aux_section1_end * sizeof(aux_codepoint_data[0]),  // 1st section
                              cudaMemcpyHostToDevice,
                              stream.value()));
     CUDA_TRY(cudaMemcpyAsync(
-      table + aux_section2_begin,
+      table_vector->data() + aux_section2_begin,
       aux_cp_data_44032_55203,
       (aux_section2_end - aux_section2_begin + 1) * sizeof(aux_codepoint_data[0]),  // 2nd section
       cudaMemcpyHostToDevice,
       stream.value()));
     CUDA_TRY(cudaMemcpyAsync(
-      table + aux_section3_begin,
+      table_vector->data() + aux_section3_begin,
       aux_cp_data_70475_71099,
       (aux_section3_end - aux_section3_begin + 1) * sizeof(aux_codepoint_data[0]),  // 3rd section
       cudaMemcpyHostToDevice,
       stream.value()));
     CUDA_TRY(cudaMemcpyAsync(
-      table + aux_section4_begin,
+      table_vector->data() + aux_section4_begin,
       aux_cp_data_119134_119232,
       (aux_section4_end - aux_section4_begin + 1) * sizeof(aux_codepoint_data[0]),  // 4th section
       cudaMemcpyHostToDevice,
@@ -113,11 +116,17 @@ struct get_aux_codepoint_data_init {
  */
 const codepoint_metadata_type* get_codepoint_metadata(rmm::cuda_stream_view stream)
 {
+  // The `current_device_resource` cannot be used because it is likely to be destroyed before the
+  // static cache which allocates from it. A static CUDA memory resource will still exist when the
+  // cache is destroyed. Sinced the codepoint is relatively small (a few MBs, this should not
+  // have a large impact on memory pool use)
+
+  static rmm::mr::cuda_memory_resource mr{};
   static cudf::strings::detail::thread_safe_per_context_cache<
     rmm::device_uvector<codepoint_metadata_type>>
     g_codepoint_metadata;
 
-  return g_codepoint_metadata.find_or_initialize(get_codepoint_metadata_init{stream})->data();
+  return g_codepoint_metadata.find_or_initialize(get_codepoint_metadata_init{stream, mr})->data();
 }
 
 /**
@@ -128,11 +137,17 @@ const codepoint_metadata_type* get_codepoint_metadata(rmm::cuda_stream_view stre
  */
 const aux_codepoint_data_type* get_aux_codepoint_data(rmm::cuda_stream_view stream)
 {
+  // The `current_device_resource` cannot be used because it is likely to be destroyed before the
+  // static cache which allocates from it. A static CUDA memory resource will still exist when the
+  // cache is destroyed. Sinced the codepoint is relatively small (a few MBs, this should not
+  // have a large impact on memory pool use)
+
+  static rmm::mr::cuda_memory_resource mr{};
   static cudf::strings::detail::thread_safe_per_context_cache<
     rmm::device_uvector<aux_codepoint_data_type>>
     g_aux_codepoint_data;
 
-  return g_aux_codepoint_data.find_or_initialize(get_aux_codepoint_data_init{stream})->data();
+  return g_aux_codepoint_data.find_or_initialize(get_aux_codepoint_data_init{stream, mr})->data();
 }
 
 namespace {
