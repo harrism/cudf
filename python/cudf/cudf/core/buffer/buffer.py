@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 import pickle
 from types import SimpleNamespace
 from typing import Any, Dict, Literal, Mapping, Optional, Sequence, Tuple
 
 import numpy
+from nvtx import annotate
 from typing_extensions import Self
 
 import rmm
@@ -16,6 +18,9 @@ import cudf
 from cudf.core.abc import Serializable
 from cudf.utils.string import format_bytes
 
+import cupyx
+import cuda.cudart as cudart
+import ctypes
 
 def host_memory_allocation(nbytes: int) -> memoryview:
     """Allocate host memory using NumPy
@@ -35,7 +40,8 @@ def host_memory_allocation(nbytes: int) -> memoryview:
     memoryview
         The new host allocation.
     """
-    return numpy.empty((nbytes,), dtype="u1").data
+    return cupyx.empty_pinned(nbytes, dtype="u1").data
+    #return numpy.empty((nbytes,), dtype="u1").data
 
 
 def cuda_array_interface_wrapper(
